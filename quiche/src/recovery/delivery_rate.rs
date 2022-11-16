@@ -272,6 +272,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
             };
 
             r.delivery_rate.update_rate_sample(&acked, now);

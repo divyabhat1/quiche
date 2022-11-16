@@ -582,6 +582,8 @@ impl Recovery {
                     tx_in_flight: unacked.tx_in_flight,
 
                     lost: unacked.lost,
+
+                    ecn_marked: unacked.ecn_marked,
                 });
 
                 trace!("{} packet newly acked {}", trace_id, unacked.pkt_num);
@@ -1248,6 +1250,17 @@ pub struct CongestionControlOps {
         now: Instant,
     ),
 
+    pub process_ecn: fn(
+        r: &mut Recovery,
+        newly_ecn_marked_acked: u64,
+        new_ce_marks: u64,
+        acked_bytes: usize,
+        largest_acked_pkt: &Sent,
+        epoch: packet::Epoch,
+        now: Instant,
+        use_ce: bool,
+    ),
+
     pub collapse_cwnd: fn(r: &mut Recovery),
 
     pub checkpoint: fn(r: &mut Recovery),
@@ -1392,6 +1405,8 @@ pub struct Acked {
     pub tx_in_flight: usize,
 
     pub lost: u64,
+
+    pub ecn_marked: bool,
 }
 
 #[derive(Clone, Copy, Debug)]

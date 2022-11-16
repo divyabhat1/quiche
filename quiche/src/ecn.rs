@@ -59,6 +59,7 @@ pub struct Ecn {
     last_ecn_counts: [packet::EcnCounts; packet::Epoch::count()],
     enabled: bool,
     use_ect1: bool,
+    ecn_marked_acked: u64,
 }
 
 impl Ecn {
@@ -80,6 +81,7 @@ impl Ecn {
             last_ecn_counts: base_ecn_counts,
             enabled,
             use_ect1,
+            ecn_marked_acked: 0,
         }
     }
 
@@ -121,6 +123,15 @@ impl Ecn {
 
             EcnState::Validating(_) | EcnState::Unsupported => ECN_NOT_ECT,
         }
+    }
+
+    pub fn is_ecn_enabled(&self) -> bool {
+        self.enabled
+    }
+
+    pub fn inc_ecn_acked(&mut self) {
+        self.ecn_marked_acked += 1;
+        trace!("Incremented ECN acked {}", self.ecn_marked_acked);
     }
 
     /// Returns whether the next packet to send will be ECN-marked.

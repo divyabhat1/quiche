@@ -51,6 +51,7 @@ pub static CUBIC: CongestionControlOps = CongestionControlOps {
     on_packet_sent,
     on_packets_acked,
     congestion_event,
+    process_ecn,
     collapse_cwnd,
     checkpoint,
     rollback,
@@ -396,6 +397,21 @@ fn congestion_event(
     }
 }
 
+fn process_ecn(
+    r: &mut Recovery, _newly_ecn_marked_acked: u64, new_ce_marks: u64,
+    _acked_bytes: usize, largest_lost_pkt: &Sent, epoch: packet::Epoch,
+    now: Instant, use_ce: bool,
+) {
+    if new_ce_marks > 0 && use_ce {
+        r.congestion_event(
+            new_ce_marks as usize * r.max_datagram_size,
+            largest_lost_pkt,
+            epoch,
+            now,
+        );
+    }
+}
+
 fn checkpoint(r: &mut Recovery) {
     r.cubic_state.prior.congestion_window = r.congestion_window;
     r.cubic_state.prior.ssthresh = r.ssthresh;
@@ -510,6 +526,7 @@ mod tests {
             is_app_limited: false,
             tx_in_flight: 0,
             lost: 0,
+            ecn_marked: false,
             rtt: Duration::ZERO,
         }];
 
@@ -564,6 +581,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -576,6 +594,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             },
             Acked {
@@ -588,6 +607,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             },
         ];
@@ -707,6 +727,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -773,6 +794,7 @@ mod tests {
             is_app_limited: false,
             tx_in_flight: 0,
             lost: 0,
+            ecn_marked: false,
             rtt: Duration::ZERO,
         }];
 
@@ -844,6 +866,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -883,6 +906,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -925,6 +949,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -1001,6 +1026,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -1040,6 +1066,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
@@ -1080,6 +1107,7 @@ mod tests {
                     is_app_limited: false,
                     tx_in_flight: 0,
                     lost: 0,
+                    ecn_marked: false,
                     rtt: Duration::ZERO,
                 }];
 
@@ -1150,6 +1178,7 @@ mod tests {
             is_app_limited: false,
             tx_in_flight: 0,
             lost: 0,
+            ecn_marked: false,
             rtt: Duration::ZERO,
         }];
 
@@ -1213,6 +1242,7 @@ mod tests {
             is_app_limited: false,
             tx_in_flight: 0,
             lost: 0,
+            ecn_marked: false,
             rtt: Duration::ZERO,
         }];
 
@@ -1298,6 +1328,7 @@ mod tests {
                 is_app_limited: false,
                 tx_in_flight: 0,
                 lost: 0,
+                ecn_marked: false,
                 rtt: Duration::ZERO,
             }];
 
