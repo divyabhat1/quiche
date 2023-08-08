@@ -30,6 +30,8 @@ use std::collections::BTreeMap;
 use std::collections::VecDeque;
 use std::net::SocketAddr;
 
+use smallvec::SmallVec;
+
 use slab::Slab;
 
 use crate::Error;
@@ -467,7 +469,8 @@ impl Path {
 /// An iterator over SocketAddr.
 #[derive(Default)]
 pub struct SocketAddrIter {
-    pub(crate) sockaddrs: Vec<SocketAddr>,
+    pub(crate) sockaddrs: SmallVec<[SocketAddr; 8]>,
+    pub(crate) index: usize,
 }
 
 impl Iterator for SocketAddrIter {
@@ -475,14 +478,16 @@ impl Iterator for SocketAddrIter {
 
     #[inline]
     fn next(&mut self) -> Option<Self::Item> {
-        self.sockaddrs.pop()
+        let v = self.sockaddrs.get(self.index)?;
+        self.index += 1;
+        Some(*v)
     }
 }
 
 impl ExactSizeIterator for SocketAddrIter {
     #[inline]
     fn len(&self) -> usize {
-        self.sockaddrs.len()
+        self.sockaddrs.len() - self.index
     }
 }
 
@@ -777,28 +782,6 @@ impl PathMap {
 
         Ok(())
     }
-
-    /// Handles potential connection migration.
-    pub fn on_peer_migrated(
-        &mut self, new_pid: usize, disable_dcid_reuse: bool,
-    ) -> Result<()> {
-        let active_path_id = self.get_active_path_id()?;
-
-        if active_path_id == new_pid {
-            return Ok(());
-        }
-
-        self.set_active_path(new_pid)?;
-
-        let no_spare_dcid = self.get_mut(new_pid)?.active_dcid_seq.is_none();
-
-        if no_spare_dcid && !disable_dcid_reuse {
-            self.get_mut(new_pid)?.active_dcid_seq =
-                self.get_mut(active_path_id)?.active_dcid_seq;
-        }
-
-        Ok(())
-    }
 }
 
 /// Statistics about the path of a connection.
@@ -934,8 +917,8 @@ mod tests {
             .path_id_from_addrs(&(client_addr_2, server_addr))
             .unwrap();
         path_mgr.get_mut(pid).unwrap().request_validation();
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), true);
+        assert!(path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(path_mgr.get_mut(pid).unwrap().probing_required());
 
         // Fake sending of PathChallenge in a packet of MIN_CLIENT_INITIAL_LEN - 1
         // bytes.
@@ -946,10 +929,10 @@ mod tests {
             time::Instant::now(),
         );
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), false);
+        assert!(!path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(!path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(!path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(path_mgr.get_mut(pid).unwrap().state, PathState::Validating);
         assert_eq!(path_mgr.pop_event(), None);
 
@@ -957,10 +940,10 @@ mod tests {
         // validated yet.
         path_mgr.on_response_received(data).unwrap();
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), true);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), false);
+        assert!(path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(!path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(
             path_mgr.get_mut(pid).unwrap().state,
             PathState::ValidatingMTU
@@ -978,10 +961,10 @@ mod tests {
 
         path_mgr.on_response_received(data).unwrap();
 
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validation_requested(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().probing_required(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().under_validation(), false);
-        assert_eq!(path_mgr.get_mut(pid).unwrap().validated(), true);
+        assert!(!path_mgr.get_mut(pid).unwrap().validation_requested());
+        assert!(!path_mgr.get_mut(pid).unwrap().probing_required());
+        assert!(!path_mgr.get_mut(pid).unwrap().under_validation());
+        assert!(path_mgr.get_mut(pid).unwrap().validated());
         assert_eq!(path_mgr.get_mut(pid).unwrap().state, PathState::Validated);
         assert_eq!(
             path_mgr.pop_event(),

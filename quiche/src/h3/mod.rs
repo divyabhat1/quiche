@@ -323,7 +323,7 @@ use qlog::events::EventType;
 ///
 /// [`Config::set_application_protos()`]:
 /// ../struct.Config.html#method.set_application_protos
-pub const APPLICATION_PROTOCOL: &[&[u8]] = &[b"h3", b"h3-29", b"h3-28", b"h3-27"];
+pub const APPLICATION_PROTOCOL: &[&[u8]] = &[b"h3"];
 
 // The offset used when converting HTTP/3 urgency to quiche urgency.
 const PRIORITY_URGENCY_OFFSET: u8 = 124;
@@ -1374,7 +1374,12 @@ impl Connection {
     pub fn recv_dgram(
         &mut self, conn: &mut super::Connection, buf: &mut [u8],
     ) -> Result<(usize, u64, usize)> {
-        let len = conn.dgram_recv(buf)?;
+        let len = conn.dgram_recv(buf).map_err(|err| {
+            if matches!(err, super::Error::Done) {
+                self.dgram_event_triggered = false;
+            }
+            err
+        })?;
         let mut b = octets::Octets::with_slice(buf);
         let flow_id = b.get_varint()?;
         Ok((len, flow_id, b.off()))
@@ -1826,7 +1831,7 @@ impl Connection {
             stream::HTTP3_CONTROL_STREAM_TYPE_ID |
             stream::QPACK_ENCODER_STREAM_TYPE_ID |
             stream::QPACK_DECODER_STREAM_TYPE_ID => {
-                conn.stream_priority(stream_id, 0, true)?;
+                conn.stream_priority(stream_id, 0, false)?;
             },
 
             // TODO: Server push
@@ -1834,7 +1839,7 @@ impl Connection {
 
             // Anything else is a GREASE stream, so make it the least important.
             _ => {
-                conn.stream_priority(stream_id, 255, true)?;
+                conn.stream_priority(stream_id, 255, false)?;
             },
         }
 
@@ -3468,20 +3473,44 @@ mod tests {
         s.send_body_client(stream2, true).unwrap();
         s.send_body_client(stream1, true).unwrap();
 
-        for _ in 0..reqs.len() {
-            let (stream, ev) = s.poll_server().unwrap();
-            let ev_headers = Event::Headers {
-                list: reqs[(stream / 4) as usize].clone(),
-                has_body: true,
-            };
-            assert_eq!(ev, ev_headers);
-            assert_eq!(s.poll_server(), Ok((stream, Event::Data)));
-            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
-            assert_eq!(s.poll_client(), Err(Error::Done));
+        let (_, ev) = s.poll_server().unwrap();
+        let ev_headers = Event::Headers {
+            list: reqs[0].clone(),
+            has_body: true,
+        };
+        assert_eq!(ev, ev_headers);
 
-            assert_eq!(s.recv_body_server(stream, &mut recv_buf), Ok(body.len()));
-            assert_eq!(s.poll_server(), Ok((stream, Event::Finished)));
-        }
+        let (_, ev) = s.poll_server().unwrap();
+        let ev_headers = Event::Headers {
+            list: reqs[1].clone(),
+            has_body: true,
+        };
+        assert_eq!(ev, ev_headers);
+
+        let (_, ev) = s.poll_server().unwrap();
+        let ev_headers = Event::Headers {
+            list: reqs[2].clone(),
+            has_body: true,
+        };
+        assert_eq!(ev, ev_headers);
+
+        assert_eq!(s.poll_server(), Ok((0, Event::Data)));
+        assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+        assert_eq!(s.recv_body_server(0, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_server(), Ok((0, Event::Finished)));
+
+        assert_eq!(s.poll_server(), Ok((4, Event::Data)));
+        assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+        assert_eq!(s.recv_body_server(4, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_server(), Ok((4, Event::Finished)));
+
+        assert_eq!(s.poll_server(), Ok((8, Event::Data)));
+        assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_client(), Err(Error::Done));
+        assert_eq!(s.recv_body_server(8, &mut recv_buf), Ok(body.len()));
+        assert_eq!(s.poll_server(), Ok((8, Event::Finished)));
 
         assert_eq!(s.poll_server(), Err(Error::Done));
 
@@ -4715,7 +4744,7 @@ mod tests {
         let mut h3_config = Config::new().unwrap();
         h3_config.set_max_field_section_size(65);
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -4849,9 +4878,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -4870,9 +4899,9 @@ mod tests {
         );
 
         // Clear the writable stream queue.
-        assert_eq!(s.pipe.client.stream_writable_next(), Some(10));
         assert_eq!(s.pipe.client.stream_writable_next(), Some(2));
         assert_eq!(s.pipe.client.stream_writable_next(), Some(6));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(10));
         assert_eq!(s.pipe.client.stream_writable_next(), None);
 
         s.advance().ok();
@@ -4902,9 +4931,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -4936,7 +4965,8 @@ mod tests {
         s.advance().ok();
 
         // Now we can send the request.
-        assert_eq!(s.pipe.client.stream_writable_next(), Some(0));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(2));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(6));
         assert_eq!(s.client.send_request(&mut s.pipe.client, &req, true), Ok(0));
     }
 
@@ -4962,9 +4992,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -5006,7 +5036,7 @@ mod tests {
         let mut buf = [0; 65535];
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf, len).unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -5064,7 +5094,7 @@ mod tests {
 
         let (len, _) = s.pipe.server.send(&mut buf).unwrap();
 
-        let frames = decode_pkt(&mut s.pipe.client, &mut buf, len).unwrap();
+        let frames = decode_pkt(&mut s.pipe.client, &mut buf[..len]).unwrap();
 
         let mut iter = frames.iter();
 
@@ -5096,9 +5126,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -5115,10 +5145,10 @@ mod tests {
         let _ = s.send_response(stream, false).unwrap();
 
         // Clear the writable stream queue.
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(stream));
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(11));
         assert_eq!(s.pipe.server.stream_writable_next(), Some(3));
         assert_eq!(s.pipe.server.stream_writable_next(), Some(7));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(11));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(stream));
         assert_eq!(s.pipe.server.stream_writable_next(), None);
 
         // The body must be larger than the cwnd would allow.
@@ -5168,9 +5198,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -5187,10 +5217,10 @@ mod tests {
         let _ = s.send_response(stream, false).unwrap();
 
         // Clear the writable stream queue.
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(stream));
-        assert_eq!(s.pipe.server.stream_writable_next(), Some(11));
         assert_eq!(s.pipe.server.stream_writable_next(), Some(3));
         assert_eq!(s.pipe.server.stream_writable_next(), Some(7));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(11));
+        assert_eq!(s.pipe.server.stream_writable_next(), Some(stream));
         assert_eq!(s.pipe.server.stream_writable_next(), None);
 
         // The body is large enough to fill the cwnd, except for enough bytes
@@ -5301,9 +5331,9 @@ mod tests {
         config.set_initial_max_streams_uni(5);
         config.verify_peer(false);
 
-        let mut h3_config = Config::new().unwrap();
+        let h3_config = Config::new().unwrap();
 
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
 
         s.handshake().unwrap();
 
@@ -5325,9 +5355,9 @@ mod tests {
         );
 
         // Clear the writable stream queue.
-        assert_eq!(s.pipe.client.stream_writable_next(), Some(10));
         assert_eq!(s.pipe.client.stream_writable_next(), Some(2));
         assert_eq!(s.pipe.client.stream_writable_next(), Some(6));
+        assert_eq!(s.pipe.client.stream_writable_next(), Some(10));
         assert_eq!(s.pipe.client.stream_writable_next(), None);
 
         s.advance().ok();
@@ -5645,8 +5675,8 @@ mod tests {
         config.verify_peer(false);
         config.enable_dgram(true, 100, 100);
 
-        let mut h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let h3_config = Config::new().unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
 
         // Send request followed by DATAGRAM on client side.
@@ -5693,8 +5723,8 @@ mod tests {
         config.verify_peer(false);
         config.enable_dgram(true, 100, 100);
 
-        let mut h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let h3_config = Config::new().unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
 
         // We'll send default data of 10 bytes on flow ID 0.
@@ -5785,8 +5815,8 @@ mod tests {
         config.verify_peer(false);
         config.enable_dgram(true, 100, 100);
 
-        let mut h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let h3_config = Config::new().unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
 
         // 10 bytes on flow ID 0 and 2.
@@ -6137,8 +6167,8 @@ mod tests {
         config.verify_peer(false);
         config.enable_dgram(true, 100, 100);
 
-        let mut h3_config = Config::new().unwrap();
-        let mut s = Session::with_configs(&mut config, &mut h3_config).unwrap();
+        let h3_config = Config::new().unwrap();
+        let mut s = Session::with_configs(&mut config, &h3_config).unwrap();
         s.handshake().unwrap();
 
         // 10 bytes on flow ID 0 and 2.

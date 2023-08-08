@@ -61,9 +61,8 @@ const H3_MESSAGE_ERROR: u64 = 0x10E;
 ///
 /// This module contains constants and functions for working with ALPN.
 pub mod alpns {
-    pub const HTTP_09: [&[u8]; 5] =
-        [b"hq-interop", b"hq-29", b"hq-28", b"hq-27", b"http/0.9"];
-    pub const HTTP_3: [&[u8]; 4] = [b"h3", b"h3-29", b"h3-28", b"h3-27"];
+    pub const HTTP_09: [&[u8]; 2] = [b"hq-interop", b"http/0.9"];
+    pub const HTTP_3: [&[u8]; 1] = [b"h3"];
 }
 
 pub struct PartialRequest {
@@ -1485,35 +1484,14 @@ impl HttpConn for Http3Conn {
                         },
                     }
 
-                    let written = match self
-                        .h3_conn
-                        .send_body(conn, stream_id, &body, true)
-                    {
-                        Ok(v) => v,
-
-                        Err(quiche::h3::Error::Done) => 0,
-
-                        Err(e) => {
-                            error!(
-                                "{} stream send failed {:?}",
-                                conn.trace_id(),
-                                e
-                            );
-
-                            break;
-                        },
+                    let response = PartialResponse {
+                        headers: None,
+                        priority: None,
+                        body,
+                        written: 0,
                     };
 
-                    if written < body.len() {
-                        let response = PartialResponse {
-                            headers: None,
-                            priority: None,
-                            body,
-                            written,
-                        };
-
-                        partial_responses.insert(stream_id, response);
-                    }
+                    partial_responses.insert(stream_id, response);
                 },
 
                 Ok((stream_id, quiche::h3::Event::Data)) => {
