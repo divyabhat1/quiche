@@ -57,14 +57,20 @@ pub fn bbr2_update_model_and_state(
     per_loss::bbr2_bound_bw_for_model(r);
 }
 
-pub fn bbr2_update_control_parameters(r: &mut Recovery, now: Instant) {
+pub fn bbr2_update_control_parameters(r: &mut Recovery) {
+    if r.bbr2_state.round_start {
+        trace!("bbr2_update_control_parameters update ecn_alpha");
+        r.bbr2_state.rounds_since_probe =
+            r.bbr2_state.rounds_since_probe.saturating_add(1);
+        bbr2_update_ecn_alpha(r);
+    }
+    trace!(
+        "bbr2_update_control_parameters - ecn_in_round {:?} round_start {:?}",
+        r.bbr2_state.ecn_in_round,
+        r.bbr2_state.round_start
+    );
     pacing::bbr2_set_pacing_rate(r);
     bbr2_set_send_quantum(r);
-
-    // Set outgoing packet pacing rate
-    // It is called here because send_quantum may be updated too.
-    r.set_pacing_rate(r.bbr2_state.pacing_rate, now);
-
     bbr2_set_cwnd(r);
 }
 
@@ -106,6 +112,26 @@ fn bbr2_check_startup_full_bandwidth(r: &mut Recovery) {
     r.bbr2_state.full_bw_count += 1;
 
     if r.bbr2_state.full_bw_count >= MAX_BW_COUNT {
+        r.bbr2_state.filled_pipe = true;
+    }
+}
+
+fn bbr2_check_ecn_too_high_in_startup(r: &mut Recovery, ce_ratio: usize) {
+    if r.bbr2_state.filled_pipe ||
+        !r.bbr2_state.ecn_eligible ||
+        !r.bbr2_state.startup_ecn_rounds < FULL_ECN_COUNT ||
+        ce_ratio as f64 >= ECN_THRESH
+    {
+        return;
+    }
+
+    if (ce_ratio as f64) >= ECN_THRESH {
+        r.bbr2_state.startup_ecn_rounds += 1;
+    } else {
+        r.bbr2_state.startup_ecn_rounds = 0;
+    }
+
+    if r.bbr2_state.startup_ecn_rounds >= FULL_ECN_COUNT {
         r.bbr2_state.filled_pipe = true;
     }
 }
@@ -780,4 +806,42 @@ fn bbr2_bound_cwnd_for_model(r: &mut Recovery) {
     cap = cap.max(bbr2_min_pipe_cwnd(r));
 
     r.congestion_window = r.congestion_window.min(cap);
+}
+
+// Adapted from BBRv2 implementation by Google:
+// https://github.com/google/bbr/blob/1a45fd4faf30229a3d3116de7bfe9d2f933d3562/net/ipv4/tcp_bbr2.c#L1392
+fn bbr2_update_ecn_alpha(r: &mut Recovery) {
+    if !r.ecn.is_ecn_enabled() {
+        return;
+    }
+    let delivered =
+        r.delivery_rate.delivered() - r.bbr2_state.alpha_last_delivered;
+    let delivered_ce =
+        r.bbr2_state.delivered_ce - r.bbr2_state.alpha_last_delivered_ce;
+
+    if delivered == 0 || delivered_ce == 0 {
+        trace!(
+            "bbr2_update_ecn_alpha CE Ratio cannot be computed: Delivered {:?} Delivered CE {:?}",
+            delivered, delivered_ce
+        );
+        return;
+    }
+
+    if !r.bbr2_state.ecn_eligible &&
+        (r.bbr2_state.min_rtt <= r.bbr2_state.ecn_max_rtt ||
+            r.bbr2_state.ecn_max_rtt == Duration::MAX)
+    {
+        r.bbr2_state.ecn_eligible = true;
+    }
+    trace!("bbr2_update_ecn_alpha: Alpha before update ecn_alpha {:?} alpha_last_delivered {:?} alpha_last_delivered_ce {:?}", r.bbr2_state.ecn_alpha, r.bbr2_state.alpha_last_delivered, r.bbr2_state.alpha_last_delivered_ce);
+
+    let ce_ratio = delivered_ce / delivered;
+    let alpha = ((1_f64 - ECN_ALPHA_GAIN) * r.bbr2_state.ecn_alpha) +
+        ECN_ALPHA_GAIN * ce_ratio as f64;
+    r.bbr2_state.ecn_alpha = alpha.min(1_f64);
+    r.bbr2_state.alpha_last_delivered = r.delivery_rate.delivered();
+    r.bbr2_state.alpha_last_delivered_ce = r.bbr2_state.delivered_ce;
+
+    trace!("bbr2_update_ecn_alpha: Alpha after update ecn_alpha {:?} alpha_last_delivered {:?} alpha_last_delivered_ce {:?}", r.bbr2_state.ecn_alpha, r.bbr2_state.alpha_last_delivered, r.bbr2_state.alpha_last_delivered_ce);
+    bbr2_check_ecn_too_high_in_startup(r, ce_ratio);
 }

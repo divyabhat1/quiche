@@ -42,6 +42,7 @@ pub static BBR2: CongestionControlOps = CongestionControlOps {
     on_packet_sent,
     on_packets_acked,
     congestion_event,
+    process_ecn,
     collapse_cwnd,
     checkpoint,
     rollback,
@@ -134,6 +135,21 @@ const MAX_BW_GROWTH_THRESHOLD: f64 = 1.25;
 
 /// Threshold for determining maximum bandwidth of network during Startup.
 const MAX_BW_COUNT: usize = 3;
+
+/// Threshold for CE ratio
+const ECN_THRESH: f64 = (1 / 2) as f64;
+
+/// Initial Alpha for ECN
+const ECN_ALPHA_INIT: f64 = 1.0;
+
+/// When ECN is received, scale back inflight_lo by this factor
+const ECN_FACTOR: f64 = (1 / 2) as f64;
+
+/// The gain of the EWMA (1/16).
+const ECN_ALPHA_GAIN: f64 = (1 / 16) as f64;
+
+/// Max number of ECN rounds to exit STARTUP
+const FULL_ECN_COUNT: usize = 3;
 
 /// BBR2 Internal State Machine.
 #[derive(Debug, PartialEq, Eq, Copy, Clone)]
@@ -394,6 +410,30 @@ pub struct State {
     loss_in_round: bool,
 
     loss_events_in_round: usize,
+
+    startup_ecn_rounds: usize,
+
+    ecn_eligible: bool,
+
+    ecn_alpha: f64,
+
+    ecn_in_round: bool,
+
+    alpha_last_delivered: usize,
+
+    alpha_last_delivered_ce: usize,
+
+    delivered_ce: usize,
+
+    ecn_thresh: usize,
+
+    ecn_max_rtt: Duration,
+
+    // ecn_reprobe_gain: u16, // To do: Reprobe after ECN marked packets cease
+    ecn_ce_marked: usize,
+
+    /// The number of newly marked CE packets during this RTT.
+    newly_ce_marked: u64,
 }
 
 impl State {
@@ -514,6 +554,29 @@ impl State {
             loss_in_round: false,
 
             loss_events_in_round: 0,
+
+            startup_ecn_rounds: 0,
+
+            ecn_eligible: false,
+
+            ecn_alpha: ECN_ALPHA_INIT,
+
+            ecn_in_round: false,
+
+            alpha_last_delivered: 0,
+
+            alpha_last_delivered_ce: 0,
+
+            delivered_ce: 0,
+
+            ecn_thresh: 0,
+
+            ecn_max_rtt: Duration::MAX,
+
+            // ecn_reprobe_gain: 0,
+            ecn_ce_marked: 0,
+
+            newly_ce_marked: 0,
         }
     }
 }
@@ -590,7 +653,7 @@ fn on_packets_acked(
         }
     }
 
-    per_ack::bbr2_update_control_parameters(r, now);
+    per_ack::bbr2_update_control_parameters(r);
 
     r.bbr2_state.newly_lost_bytes = 0;
 }
@@ -599,7 +662,11 @@ fn congestion_event(
     r: &mut Recovery, lost_bytes: usize, largest_lost_pkt: &Sent,
     _epoch: packet::Epoch, now: Instant,
 ) {
-    r.bbr2_state.newly_lost_bytes = lost_bytes;
+    if largest_lost_pkt.ecn_marked {
+        r.bbr2_state.ecn_ce_marked = lost_bytes;
+    } else {
+        r.bbr2_state.newly_lost_bytes = lost_bytes;
+    }
 
     per_loss::bbr2_update_on_loss(r, largest_lost_pkt, now);
 
@@ -607,6 +674,32 @@ fn congestion_event(
     if !r.in_congestion_recovery(largest_lost_pkt.time_sent) {
         // Upon entering Fast Recovery.
         bbr2_enter_recovery(r, now);
+    }
+}
+
+fn process_ecn(
+    r: &mut Recovery, _newly_ecn_marked_acked: u64, new_ce_marks: u64,
+    _acked_bytes: usize, largest_lost_pkt: &Sent, epoch: packet::Epoch,
+    now: Instant, use_ce: bool,
+) {
+    if new_ce_marks > 0 && use_ce {
+        trace!("bbr2_process_ecn ce_marks {:?}", new_ce_marks);
+        r.bbr2_state.newly_ce_marked += new_ce_marks;
+
+        r.bbr2_state.delivered_ce +=
+            new_ce_marks as usize * r.max_datagram_size();
+        trace!(
+            "bbr2_process_ecn updating delivered_ce {:?}",
+            r.bbr2_state.delivered_ce
+        );
+
+        r.bbr2_state.ecn_in_round = true;
+        r.congestion_event(
+            new_ce_marks as usize * r.max_datagram_size,
+            largest_lost_pkt,
+            epoch,
+            now,
+        );
     }
 }
 
@@ -677,6 +770,7 @@ fn debug_fmt(r: &Recovery, f: &mut std::fmt::Formatter) -> std::fmt::Result {
 mod tests {
     use super::*;
 
+    use crate::packet::EcnCounts;
     use smallvec::smallvec;
 
     use crate::recovery;
@@ -1106,6 +1200,213 @@ mod tests {
 
         assert_eq!(r.bbr2_state.state, BBR2StateMachine::ProbeRTT);
         assert_eq!(r.bbr2_state.pacing_gain, 1.0);
+    }
+
+    #[test]
+    fn bbr2_check_ackedsize() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.ecn_enabled = true;
+        cfg.ecn_use_ect1 = true;
+
+        let mut r = Recovery::new(&cfg);
+        let now = Instant::now();
+
+        r.on_init();
+
+        let p = recovery::Sent {
+            pkt_num: 0,
+            frames: smallvec::smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: std::time::Instant::now(),
+            first_sent_time: std::time::Instant::now(),
+            is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
+            has_data: false,
+            ecn_marked: false,
+        };
+
+        // Send 4 packets
+        for _ in 0..4 {
+            r.on_packet_sent_cc(p.size, now);
+        }
+
+        let mut acked = vec![
+            Acked {
+                pkt_num: p.pkt_num,
+                time_sent: p.time_sent,
+                size: p.size,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                ecn_marked: false,
+                rtt: Duration::ZERO,
+            },
+            Acked {
+                pkt_num: p.pkt_num,
+                time_sent: p.time_sent,
+                size: p.size,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                ecn_marked: false,
+                rtt: Duration::ZERO,
+            },
+            Acked {
+                pkt_num: p.pkt_num,
+                time_sent: p.time_sent,
+                size: p.size,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                ecn_marked: false,
+                rtt: Duration::ZERO,
+            },
+        ];
+
+        assert_eq!(acked.len(), 3);
+        r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
+        assert_eq!(acked.len(), 0);
+
+        acked.push(Acked {
+            pkt_num: p.pkt_num,
+            time_sent: p.time_sent,
+            size: p.size,
+            delivered: 0,
+            delivered_time: now,
+            first_sent_time: now,
+            is_app_limited: false,
+            tx_in_flight: 0,
+            lost: 0,
+            ecn_marked: false,
+            rtt: Duration::ZERO,
+        });
+
+        assert_eq!(acked.len(), 1);
+        r.on_packets_acked(&mut acked, packet::Epoch::Application, now);
+        assert_eq!(acked.len(), 0);
+    }
+
+    // To do: Add tests for packet loss events
+    #[test]
+    fn bbr2_ece_congestion_event() {
+        let mut cfg = crate::Config::new(crate::PROTOCOL_VERSION).unwrap();
+        cfg.set_cc_algorithm(recovery::CongestionControlAlgorithm::BBR2);
+        cfg.ecn_enabled = true;
+        cfg.ecn_use_ect1 = true;
+
+        let mut r = Recovery::new(&cfg);
+        let now = Instant::now();
+        let mss = r.max_datagram_size;
+
+        r.on_init();
+        let mut total_sent = 0;
+        let p = Sent {
+            pkt_num: 0,
+            frames: smallvec![],
+            time_sent: now,
+            time_acked: None,
+            time_lost: None,
+            size: r.max_datagram_size,
+            ack_eliciting: true,
+            in_flight: true,
+            delivered: 0,
+            delivered_time: std::time::Instant::now(),
+            first_sent_time: std::time::Instant::now(),
+            tx_in_flight: 0,
+            lost: 0,
+            is_app_limited: false,
+            has_data: false,
+            ecn_marked: true,
+        };
+        // Send 20 packets.
+        for pn in 0..20 {
+            let pkt = Sent {
+                pkt_num: pn,
+                frames: smallvec![],
+                time_sent: now,
+                time_acked: None,
+                time_lost: None,
+                size: mss,
+                ack_eliciting: true,
+                in_flight: true,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                tx_in_flight: 0,
+                lost: 0,
+                has_data: false,
+                ecn_marked: true,
+            };
+            total_sent += pkt.size;
+            r.on_packet_sent(
+                pkt,
+                packet::Epoch::Application,
+                HandshakeStatus::default(),
+                now,
+                "",
+            );
+        }
+
+        let rtt = Duration::from_millis(50);
+        let mut now = now + rtt;
+        let tot_ect1 = r.initial_congestion_window_packets as u64 - 1 + 10_u64;
+
+        for pn in 0..20 {
+            let mut acked = vec![Acked {
+                pkt_num: pn,
+                time_sent: now,
+                size: r.max_datagram_size,
+                delivered: 0,
+                delivered_time: now,
+                first_sent_time: now,
+                is_app_limited: false,
+                rtt: Duration::ZERO,
+                tx_in_flight: 0,
+                lost: 0,
+                ecn_marked: true,
+            }];
+
+            if pn == 19 {
+                r.process_ecn(
+                    20,
+                    Some(EcnCounts {
+                        ect0_count: 0,
+                        ect1_count: tot_ect1,
+                        ecn_ce_count: 2,
+                    }),
+                    total_sent,
+                    &p,
+                    packet::Epoch::Application,
+                    now,
+                );
+            } else {
+                r.on_packets_acked(&mut acked, packet::Epoch::Application, now)
+            }
+
+            now += rtt;
+        }
+        assert_eq!(r.bbr2_state.ecn_ce_marked, mss * 2);
+        assert!(r.bbr2_state.ecn_in_round);
+        assert_eq!(r.delivery_rate.delivered(), 19 * mss);
+        assert_eq!(r.bbr2_state.delivered_ce, 2 * mss);
     }
 }
 

@@ -51,7 +51,19 @@ pub fn bbr2_check_inflight_too_high(r: &mut Recovery, now: Instant) -> bool {
 }
 
 pub fn bbr2_is_inflight_too_high(r: &mut Recovery) -> bool {
-    r.bbr2_state.lost > (r.bbr2_state.tx_in_flight as f64 * LOSS_THRESH) as usize
+    if r.bbr2_state.lost > 0 && r.bbr2_state.tx_in_flight > 0 {
+        return r.bbr2_state.lost >
+            (r.bbr2_state.tx_in_flight as f64 * LOSS_THRESH) as usize;
+    }
+
+    if r.bbr2_state.delivered_ce > 0 &&
+        r.delivery_rate.delivered() > 0 &&
+        r.bbr2_state.ecn_eligible
+    {
+        return r.bbr2_state.delivered_ce >=
+            (r.delivery_rate.delivered() * r.bbr2_state.ecn_thresh);
+    }
+    false
 }
 
 fn bbr2_handle_inflight_too_high(r: &mut Recovery, now: Instant) {
@@ -128,6 +140,7 @@ pub fn bbr2_reset_congestion_signals(r: &mut Recovery) {
 
     bbr.loss_in_round = false;
     bbr.loss_events_in_round = 0;
+    bbr.ecn_in_round = false;
     bbr.bw_latest = 0;
     bbr.inflight_latest = 0;
 }
@@ -149,6 +162,7 @@ pub fn bbr2_update_congestion_signals(r: &mut Recovery, packet: &Acked) {
     bbr2_adapt_lower_bounds_from_congestion(r);
 
     r.bbr2_state.loss_in_round = false;
+    r.bbr2_state.ecn_in_round = false;
     r.bbr2_state.loss_events_in_round = 0;
 }
 
@@ -158,7 +172,7 @@ fn bbr2_adapt_lower_bounds_from_congestion(r: &mut Recovery) {
         return;
     }
 
-    if r.bbr2_state.loss_in_round {
+    if r.bbr2_state.loss_in_round || r.bbr2_state.ecn_in_round {
         bbr2_init_lower_bounds(r);
         bbr2_loss_lower_bounds(r);
     }
@@ -179,12 +193,21 @@ fn bbr2_init_lower_bounds(r: &mut Recovery) {
 
 fn bbr2_loss_lower_bounds(r: &mut Recovery) {
     let bbr = &mut r.bbr2_state;
+    let ecn_flight_lo: usize;
 
     // Adjust model once per round based on loss.
-    bbr.bw_lo = bbr.bw_latest.max((bbr.bw_lo as f64 * BETA) as u64);
-    bbr.inflight_lo = bbr
-        .inflight_latest
-        .max((bbr.inflight_lo as f64 * BETA) as usize);
+    if bbr.ecn_in_round && bbr.ecn_eligible {
+        let ecn_cut = bbr.ecn_alpha * ECN_FACTOR;
+        ecn_flight_lo = (bbr.inflight_lo as f64 * ecn_cut) as usize;
+    } else {
+        // Adjust model once per round based on loss.
+        ecn_flight_lo = usize::MAX;
+        bbr.bw_lo = bbr.bw_latest.max((bbr.bw_lo as f64 * BETA) as u64);
+        bbr.inflight_lo = bbr
+            .inflight_latest
+            .max((bbr.inflight_lo as f64 * BETA) as usize);
+    }
+    bbr.inflight_lo = bbr.inflight_lo.min(ecn_flight_lo);
 }
 
 pub fn bbr2_reset_lower_bounds(r: &mut Recovery) {

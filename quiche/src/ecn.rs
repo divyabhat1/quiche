@@ -256,7 +256,7 @@ mod tests {
     fn disabled_ecn() {
         let mut ecn = Ecn::new(false, false, [packet::EcnCounts::default(); 3]);
         for _ in 0..1000 {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+            assert!(!ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
         }
     }
@@ -265,14 +265,14 @@ mod tests {
     fn ecn_marked_pkt_acked_without_ecn_counts() {
         let mut ecn = Ecn::new(true, false, [packet::EcnCounts::default(); 3]);
 
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+        assert!(ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
 
         // The packet gets acknowledged, but in an ACK frame without ECN counts.
         let ce_events = ecn.on_ack_received(packet::Epoch::Application, 1, None);
         assert_eq!(ce_events, 0);
         // This disables ECN marks.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
     }
 
@@ -281,7 +281,7 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, false, ecn_counts);
 
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+        assert!(ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
 
         // The packet gets acknowledged, but in an ACK frame increasing the ECN
@@ -294,7 +294,7 @@ mod tests {
         );
         assert_eq!(ce_events, 0);
         // This disables ECN marks.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
     }
 
@@ -303,7 +303,7 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, true, ecn_counts);
 
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT1);
 
         // The packet gets acknowledged, but in an ACK frame increasing the ECN
@@ -316,7 +316,7 @@ mod tests {
         );
         assert_eq!(ce_events, 0);
         // This disables ECN marks.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
     }
 
@@ -325,7 +325,7 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, false, ecn_counts);
 
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+        assert!(ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
 
         // The packet gets acknowledged, but the ACK frame increases the ECN
@@ -340,7 +340,7 @@ mod tests {
         );
         assert_eq!(ce_events, 0);
         // This disables ECN marks.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
     }
 
@@ -349,12 +349,12 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, false, ecn_counts);
         for _ in 0..ECN_VALIDATION_COUNT {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
         }
         // Once we sent ECN_VALIDATION_COUNT packets, wait for any ECN
         // validation before sending ECN marks again.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
 
         // Our first 10 packets got acked correctly. ECN should now be enabled.
@@ -367,7 +367,7 @@ mod tests {
         );
         assert_eq!(ce_events, 2);
         for _ in 0..1000 {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
         }
     }
@@ -377,12 +377,12 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, true, ecn_counts);
         for _ in 0..ECN_VALIDATION_COUNT {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT1);
         }
         // Once we sent ECN_VALIDATION_COUNT packets, wait for any ECN
         // validation before sending ECN marks again.
-        assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+        assert!(!ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
 
         // Our first 10 packets got acked correctly. ECN should now be enabled.
@@ -395,7 +395,7 @@ mod tests {
         );
         assert_eq!(ce_events, 2);
         for _ in 0..1000 {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT1);
         }
     }
@@ -405,7 +405,7 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, false, ecn_counts);
         for _ in 0..3 {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
         }
         ecn.on_packets_lost(2);
@@ -419,12 +419,12 @@ mod tests {
         );
         assert_eq!(ce_events, 0);
         for _ in 0..ECN_LOSS_THRESHOLD {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), true);
+            assert!(ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT0);
         }
         ecn.on_packets_lost(ECN_LOSS_THRESHOLD);
         for _ in 0..1000 {
-            assert_eq!(ecn.is_next_sent_pkt_ecn_marked(), false);
+            assert!(!ecn.is_next_sent_pkt_ecn_marked());
             assert_eq!(ecn.get_ecn_value_to_send(), ECN_NOT_ECT);
         }
     }
