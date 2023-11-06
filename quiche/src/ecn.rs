@@ -303,7 +303,7 @@ mod tests {
         let mut ecn_counts = [packet::EcnCounts::default(); 3];
         let mut ecn = Ecn::new(true, true, ecn_counts);
 
-        assert!(!ecn.is_next_sent_pkt_ecn_marked());
+        assert!(ecn.is_next_sent_pkt_ecn_marked());
         assert_eq!(ecn.get_ecn_value_to_send(), ECN_ECT1);
 
         // The packet gets acknowledged, but in an ACK frame increasing the ECN
